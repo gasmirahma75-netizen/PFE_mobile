@@ -31,8 +31,9 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
+ 
+
   Future<void> _login() async {
-    // 1. Validation locale
     if (_emailController.text.trim().isEmpty || _passwordController.text.trim().isEmpty) {
       _showSnackBar("Veuillez remplir tous les champs", Colors.orange);
       return;
@@ -40,9 +41,6 @@ class _LoginPageState extends State<LoginPage> {
 
     setState(() => _isLoading = true);
     
-    // Debug: Voir l'URL appelée dans la console
-    print("🚀 Tentative de connexion sur : ${ApiConfig.loginUrl}");
-
     try {
       final response = await http.post(
         Uri.parse(ApiConfig.loginUrl),
@@ -51,36 +49,34 @@ class _LoginPageState extends State<LoginPage> {
           "email": _emailController.text.trim().toLowerCase(),
           "password": _passwordController.text.trim(),
         }),
-      ).timeout(const Duration(seconds: 10)); // Timeout de 10s
+      ).timeout(const Duration(seconds: 15));
 
-      print("📊 Code Status: ${response.statusCode}");
       final data = jsonDecode(response.body);
 
       if (response.statusCode == 200 && data['success'] == true) {
         final prefs = await SharedPreferences.getInstance();
         
-        // Sauvegarde des infos
-        await prefs.setString('saved_user_email', _emailController.text.trim());
+        // 1. SAUVEGARDE DU TOKEN JWT[cite: 1, 2]
+        if (data['token'] != null) {
+          await prefs.setString('jwt_token', data['token']);
+        print("✅ Authentification réussie, Token enregistré"); // C'est ce message que vous cherchez
+    }
         
-        String userName = "Agent Poste";
-        if (data['user'] != null) {
-          userName = data['user']['nom_complet'] ?? data['user']['name'] ?? "Agent Poste";
-        }
+        // 2. SAUVEGARDE DES INFOS UTILISATEUR[cite: 2]
+        await prefs.setString('saved_user_email', _emailController.text.trim());
+        String userName = data['user']?['nom_complet'] ?? "Utilisateur";
         await prefs.setString('user_name', userName);
 
-        print("✅ Login réussi pour: $userName");
+        print("✅ Authentification réussie, Token enregistré.");
 
         if (!mounted) return;
         Navigator.pushReplacementNamed(context, '/dashboard');
         
       } else {
-        // Erreur renvoyée par le backend
-        _showSnackBar(data['message'] ?? "Email ou mot de passe incorrect", Colors.red);
+        _showSnackBar(data['message'] ?? "Erreur d'authentification", Colors.red);
       }
     } catch (e) {
-      // Erreur de connexion (Serveur éteint, mauvaise IP, Firewall)
-      print("❌ ERREUR DE CONNEXION : $e");
-      _showSnackBar("Impossible de joindre le serveur. Vérifiez votre IP : ${ApiConfig.baseUrl}", Colors.red);
+      _showSnackBar("Erreur de connexion au serveur", Colors.red);
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }

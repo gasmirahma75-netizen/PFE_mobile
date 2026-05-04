@@ -1,6 +1,11 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart'; //[cite: 3]
+import 'package:pdf/pdf.dart'; 
+import 'package:pdf/widgets.dart' as pw; 
 import '../services/api_service.dart';
 import 'correction_page.dart';
 
@@ -13,65 +18,162 @@ class UploadContract extends StatefulWidget {
 
 class _UploadContractState extends State<UploadContract> {
   final Color posteBlue = const Color(0xFF001A70);
-  File? _selectedFile;
+  List<File> _selectedFiles = []; 
   bool _isUploading = false;
 
-  // --- 1. SÉLECTION DU FICHIER ---
-  Future<void> _pickFile() async {
+  // --- 1. SÉLECTION DE FICHIERS ---
+  Future<void> _pickFiles() async {
     try {
       FilePickerResult? result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['pdf', 'jpg', 'png', 'jpeg'],
+        allowMultiple: true,
       );
 
       if (result != null) {
         setState(() {
-          _selectedFile = File(result.files.single.path!);
+          _selectedFiles = result.paths.map((path) => File(path!)).toList();
         });
-        print("✅ Fichier sélectionné : ${_selectedFile!.path}");
       }
     } catch (e) {
-      print("❌ Erreur sélection : $e");
+      _showSnackBar("Erreur de sélection", Colors.red);
     }
   }
 
-  // --- 2. ENVOI ET EXTRACTION ---
-  Future<void> _startIAAudit() async {
-    if (_selectedFile == null) return;
+  // --- 2. CAPTURE PHOTOS ---
+  Future<void> _takePhotos() async {
+    final ImagePicker picker = ImagePicker();
+    List<File> tempFiles = [..._selectedFiles];
+    bool continueScanning = true;
 
+    while (continueScanning) {
+      final XFile? photo = await picker.pickImage(
+        source: ImageSource.camera,
+        imageQuality: 20, 
+        maxWidth: 700,    
+        maxHeight: 1000,  
+      );
+      if (photo != null) {
+        tempFiles.add(File(photo.path));
+        
+        if (!mounted) break;
+        bool? encore = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text("Page ajoutée"),
+            content: Text("Voulez-vous photographier la page suivante ? (${tempFiles.length} pages)"),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("TERMINER")),
+              TextButton(onPressed: () => Navigator.pop(context, true), child: const Text("OUI, SUIVANTE")),
+            ],
+          ),
+        );
+        if (encore != true) continueScanning = false;
+      } else {
+        continueScanning = false;
+      }
+    }
+
+    if (tempFiles.isNotEmpty) {
+      setState(() => _selectedFiles = tempFiles);
+    }
+  }
+
+  // --- 3. GÉNÉRATION ET SAUVEGARDE DU PDF (VERSION SÉCURISÉE) ---
+  Future<File?> _generateAndSavePdf(List<File> files) async {
+    try {
+      final pdf = pw.Document();
+
+      for (var file in files) {
+        if (await file.exists()) {
+          // Lecture physique du fichier pour garantir que les bytes ne sont pas vides
+          final Uint8List imageBytes = await file.readAsBytes(); 
+          if (imageBytes.isNotEmpty) {
+            final image = pw.MemoryImage(imageBytes);
+            
+            pdf.addPage(
+              pw.Page(
+                pageFormat: PdfPageFormat.a4,
+                build: (pw.Context context) => pw.Center(
+                  child: pw.Image(image, fit: pw.BoxFit.contain, dpi: 72), // Insertion dans le PDF
+                ),
+              ),
+            );
+          }
+        }
+      }
+
+      // Sauvegarde dans le dossier documents de l'application avec un nom unique (timestamp)
+      final output = await getApplicationDocumentsDirectory();
+      final String path = "${output.path}/scan_${DateTime.now().millisecondsSinceEpoch}.pdf";
+      final File pdfFile = File(path);
+
+      // Étape de sécurité : On enregistre les bytes et on flush pour forcer l'écriture Windows/Android
+      await pdfFile.writeAsBytes(await pdf.save(), flush: true);
+
+      // Vérification de la taille finale sur le disque
+      int checkSize = await pdfFile.length();
+      if (checkSize == 0) {
+        debugPrint("❌ Erreur : Le fichier PDF généré est vide.");
+        return null;
+      }
+
+      return pdfFile;
+    } catch (e) {
+      debugPrint("Erreur PDF : $e");
+      return null;
+    }
+  }
+
+  // --- 4. ENVOI ET ANALYSE IA ---
+  Future<void> _startIAAudit() async {
+    if (_selectedFiles.isEmpty) return;
     setState(() => _isUploading = true);
-    print("📡 Lancement de l'analyse IA...");
 
     try {
-      // ✅ CORRECTION ICI : On passe _selectedFile! directement
-      // On ne met plus de crochets [] car ApiService attend un File, pas une List<File>
-      final dataIA = await ApiService.uploadContract(_selectedFile!);
+      File? fileToSend;
+      
+      // Si plusieurs images ou fichiers non-PDF, on génère un PDF unique
+      if (_selectedFiles.length > 1 || !_selectedFiles.first.path.toLowerCase().endsWith('.pdf')) {
+        fileToSend = await _generateAndSavePdf(_selectedFiles);
+      } else {
+        fileToSend = _selectedFiles.first;
+      }
+
+      if (fileToSend == null || await fileToSend.length() == 0) {
+        _showSnackBar("Erreur : Impossible de générer un fichier valide.", Colors.red);
+        return; 
+      }
+
+      debugPrint("📤 Envoi en cours... Taille : ${await fileToSend.length()} octets");
+
+      final dataIA = await ApiService.uploadContract(fileToSend);
 
       if (dataIA != null) {
         if (!mounted) return;
-        
-        print("✨ Données extraites avec succès, navigation...");
         Navigator.push(
           context,
-          MaterialPageRoute(
-            builder: (context) => CorrectionPage(data: dataIA),
-          ),
+          MaterialPageRoute(builder: (context) => CorrectionPage(data: dataIA)),
         );
       } else {
         _showSnackBar("L'IA n'a pas pu extraire de données.", Colors.orange);
       }
     } catch (e) {
-      print("❌ Erreur fatale : $e");
-      _showSnackBar("Erreur de connexion au serveur.", Colors.red);
+      _showSnackBar("Erreur lors du traitement : $e", Colors.red);
     } finally {
-      if (mounted) setState(() => _isUploading = false);
+      if (mounted) {
+        setState(() {
+          _isUploading = false;
+          // Optionnel : _selectedFiles.clear(); // Nettoyage après succès[cite: 7]
+        });
+      }
     }
   }
 
+  // --- UI HELPERS ---
   void _showSnackBar(String message, Color color) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), backgroundColor: color),
-    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message), backgroundColor: color));
   }
 
   @override
@@ -80,84 +182,64 @@ class _UploadContractState extends State<UploadContract> {
       appBar: AppBar(
         title: const Text("Numérisation IA", style: TextStyle(color: Colors.white)),
         backgroundColor: posteBlue,
-        iconTheme: const IconThemeData(color: Colors.white),
       ),
       body: Padding(
         padding: const EdgeInsets.all(20.0),
         child: Column(
           children: [
+            const Text("Capture multi-pages", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
             const SizedBox(height: 20),
-            const Text(
-              "Analyse de Contrat par IA",
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+            Row(
+              children: [
+                Expanded(child: _buildSourceCard(Icons.camera_alt, "Prendre Photo", _takePhotos)),
+                const SizedBox(width: 15),
+                Expanded(child: _buildSourceCard(Icons.picture_as_pdf, "Choisir Fichier", _pickFiles)),
+              ],
             ),
-            const SizedBox(height: 30),
-
-            // ZONE DE SÉLECTION (DRAG & DROP VISUEL)
-            GestureDetector(
-              onTap: _pickFile,
-              child: Container(
-                width: double.infinity,
-                height: 180,
-                decoration: BoxDecoration(
-                  color: Colors.grey[100],
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: posteBlue.withOpacity(0.2)),
-                ),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.cloud_upload_outlined, size: 60, color: posteBlue),
-                    const SizedBox(height: 10),
-                    Text(
-                      _selectedFile == null 
-                        ? "Cliquez pour choisir un PDF / Image" 
-                        : "Fichier prêt ✅",
-                      style: const TextStyle(fontWeight: FontWeight.w500),
-                    ),
-                  ],
+            const SizedBox(height: 20),
+            if (_selectedFiles.isNotEmpty)
+              Expanded(
+                child: ListView.builder(
+                  itemCount: _selectedFiles.length,
+                  itemBuilder: (context, index) {
+                    return ListTile(
+                      leading: const Icon(Icons.description, color: Colors.blue),
+                      title: Text("Page ${index + 1}"),
+                      trailing: IconButton(
+                        icon: const Icon(Icons.delete, color: Colors.red),
+                        onPressed: () => setState(() => _selectedFiles.removeAt(index)),
+                      ),
+                    );
+                  },
                 ),
               ),
-            ),
-
-            const SizedBox(height: 20),
-
-            if (_selectedFile != null)
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: Colors.blue.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Text(
-                  "Fichier : ${_selectedFile!.path.split(Platform.pathSeparator).last}",
-                  style: const TextStyle(color: Colors.blue, fontWeight: FontWeight.bold),
-                ),
-              ),
-
-            const Spacer(),
-
-            // BOUTON D'ACTION
+            const SizedBox(height: 10),
             SizedBox(
               width: double.infinity,
-              height: 60,
+              height: 55,
               child: ElevatedButton(
-                onPressed: (_selectedFile != null && !_isUploading) ? _startIAAudit : null,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: posteBlue,
-                  disabledBackgroundColor: Colors.grey[300],
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-                ),
+                onPressed: (_selectedFiles.isNotEmpty && !_isUploading) ? _startIAAudit : null,
+                style: ElevatedButton.styleFrom(backgroundColor: posteBlue),
                 child: _isUploading
                     ? const CircularProgressIndicator(color: Colors.white)
-                    : const Text(
-                        "LANCER L'EXTRACTION IA",
-                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
-                      ),
+                    : const Text("FUSIONNER ET ANALYSER", style: TextStyle(color: Colors.white)),
               ),
             ),
-            const SizedBox(height: 20),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSourceCard(IconData icon, String label, VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        height: 100,
+        decoration: BoxDecoration(color: Colors.grey[200], borderRadius: BorderRadius.circular(15)),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [Icon(icon, color: posteBlue, size: 30), Text(label)],
         ),
       ),
     );

@@ -1,33 +1,45 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../services/session_manager.dart'; // Assure-toi que ce service existe pour le nom
+
+// --- IMPORTS ---
+import '../main.dart'; 
+import '../services/session_manager.dart'; 
 import '../pages/UploadContract.dart';
-import '../components/Login.dart';
+import '../pages/user_management_page.dart'; 
+import 'package:frontend_flutter/pages/gerer_contract.dart';
+import '../main.dart';
+import '../pages/UploadContract.dart';
 
 class Navbar extends StatelessWidget {
   const Navbar({super.key});
 
   @override
   Widget build(BuildContext context) {
-    // Couleurs officielles Poste Tunisienne
     const Color posteBlue = Color(0xFF001A70);
     const Color posteYellow = Color(0xFFFFC20E);
 
     return Drawer(
       child: Column(
         children: [
-          // --- HEADER : INFOS UTILISATEUR ---
+          // --- ENTÊTE DU MENU SÉCURISÉE ---
           FutureBuilder<String>(
-            future: SessionManager.getUserName(), // Récupère le nom stocké
+            future: SessionManager.getUserName(),
             builder: (context, snap) {
+              // On récupère le nom de la session
+              String name = snap.data ?? "Utilisateur";
+              
+              // SÉCURITÉ : On vérifie si le nom est vide avant de prendre la 1ère lettre
+              String initial = "U";
+              if (name.trim().isNotEmpty) {
+                initial = name.trim()[0].toUpperCase();
+              }
+
               return UserAccountsDrawerHeader(
                 decoration: const BoxDecoration(color: posteBlue),
                 currentAccountPicture: CircleAvatar(
                   backgroundColor: posteYellow,
                   child: Text(
-                    (snap.hasData && snap.data!.isNotEmpty) 
-                        ? snap.data![0].toUpperCase() 
-                        : "U",
+                    initial,
                     style: const TextStyle(
                       fontSize: 32.0, 
                       color: posteBlue, 
@@ -35,72 +47,69 @@ class Navbar extends StatelessWidget {
                     ),
                   ),
                 ),
-                accountName: Text(
-                  snap.data ?? "Utilisateur",
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                ),
-                accountEmail: const Text("PFE 2026 - IA Audit System"),
+                accountName: Text(name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                accountEmail: const Text("La Poste Tunisienne - Audit IA"),
               );
             },
           ),
 
           // --- OPTIONS DE NAVIGATION ---
           ListTile(
-            leading: const Icon(Icons.dashboard_outlined, color: posteBlue),
+            leading: const Icon(Icons.grid_view_rounded, color: Colors.blueGrey),
             title: const Text("Tableau de Bord"),
+            onTap: () => Navigator.pop(context),
+          ),
+
+          ListTile(
+            leading: const Icon(Icons.people_outline, color: posteBlue),
+            title: const Text("Gérer Utilisateurs"),
             onTap: () {
-              Navigator.pop(context); // Ferme le menu
-              // Si tu es déjà sur le Dashboard, on fait juste un pop
+              Navigator.pop(context);
+              Navigator.push(context, MaterialPageRoute(builder: (context) => const UserManagementPage()));
             },
           ),
 
           ListTile(
-            leading: const Icon(Icons.cloud_upload_outlined, color: posteBlue),
-            title: const Text("Nouvel Audit"),
+            leading: const Icon(Icons.assignment_outlined, color: posteBlue),
+            title: const Text("Gérer Contrats"),
             onTap: () {
-              Navigator.pop(context); // Ferme le menu
-              Navigator.push(
-                context, 
-                MaterialPageRoute(builder: (context) => const UploadContract())
-              );
+              Navigator.pop(context);
+              Navigator.push(context, MaterialPageRoute(builder: (context) => GererContractPage()));
             },
           ),
+          
+         ListTile(
+  leading: const Icon(Icons.add_a_photo_outlined, color: posteBlue),
+  title: const Text("Nouvel Audit"),
+  onTap: () {
+    // 1. On ferme le Drawer pour libérer l'écran
+    Navigator.pop(context); 
+    
+    // 2. On navigue vers AuditPage (définie dans main.dart)
+    // C'est cette page qui contient la boucle while(takingPhotos)
+    Navigator.push(
+      context, 
+      MaterialPageRoute(builder: (context) => const UploadContract())
+    );
+  },
+),
 
-          ListTile(
-            leading: const Icon(Icons.history_outlined, color: posteBlue),
-            title: const Text("Historique"),
-            onTap: () {
-              // Navigator.pushNamed(context, '/history');
-            },
-          ),
-
-          const Spacer(), // Pousse le bouton déconnexion vers le bas
+          const Spacer(),
           const Divider(),
 
           // --- BOUTON DÉCONNEXION ---
           ListTile(
-            leading: const Icon(Icons.logout, color: Colors.redAccent),
-            title: const Text(
-              "Déconnexion", 
-              style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)
-            ),
+            leading: const Icon(Icons.logout, color: Colors.grey),
+            title: const Text("Déconnexion"),
             onTap: () async {
-              // 1. Demander confirmation
-              bool confirm = await _showLogoutDialog(context);
-              
-              if (confirm) {
-                // 2. Vider les préférences (token, nom, etc.)
-                SharedPreferences prefs = await SharedPreferences.getInstance();
-                await prefs.clear();
-
-                // 3. Retourner au Login et vider la pile de navigation
-                if (context.mounted) {
-                  Navigator.pushAndRemoveUntil(
-                    context, 
-                    MaterialPageRoute(builder: (context) => const LoginPage ()), 
-                    (route) => false,
-                  );
-                }
+              SharedPreferences prefs = await SharedPreferences.getInstance();
+              await prefs.clear();
+              if (context.mounted) {
+                Navigator.pushAndRemoveUntil(
+                  context, 
+                  MaterialPageRoute(builder: (context) => const LoginPage()), 
+                  (route) => false
+                );
               }
             },
           ),
@@ -108,29 +117,5 @@ class Navbar extends StatelessWidget {
         ],
       ),
     );
-  }
-
-  // Fonction pour afficher la boîte de dialogue de confirmation
-  Future<bool> _showLogoutDialog(BuildContext context) async {
-    return await showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("Déconnexion"),
-        content: const Text("Voulez-vous vraiment quitter l'application ?"),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text("Annuler"),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text(
-              "Oui, déconnexion", 
-              style: TextStyle(color: Colors.red)
-            ),
-          ),
-        ],
-      ),
-    ) ?? false;
   }
 }
